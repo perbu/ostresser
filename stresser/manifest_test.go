@@ -1,155 +1,188 @@
-package stresser_test
+package stresser
 
 import (
-	"context"
-	"flag"
-	"fmt"
-	"github.com/perbu/ostresser/stresser"
-	"log"
 	"os"
-	"os/signal"
-	"syscall"
-	"time" // Import time package
+	"path/filepath"
+	"strings"
+	"testing"
 )
 
-// --- Command Line Flags ---
-var (
-	// Configuration
-	configPath = flag.String("config", "", "Path to YAML config file (optional, overrides env vars)")
+func TestLoadManifest(t *testing.T) {
+	// Create a temporary manifest file
+	dir := t.TempDir() // Creates a temporary directory that will be cleaned up after the test
+	manifestPath := filepath.Join(dir, "test_manifest.txt")
 
-	// Test Parameters
-	duration    = flag.String("d", "1m", "Duration of the test (e.g., 30s, 5m, 1h)")
-	concurrency = flag.Int("c", 10, "Number of concurrent workers")
-	randomize   = flag.Bool("r", false, "Randomize access to keys in the manifest for READ ops (default: sequential)")
-	opType      = flag.String("op", stresser.DefaultOperationType, "Operation type: 'read', 'write', or 'mixed'")
-	putSizeKB   = flag.Int("putsize", stresser.DefaultPutSizeKB, "Size of objects to upload in KB for 'write' or 'mixed' mode")
-
-	// Output
-	outputFile = flag.String("o", "stress_results.csv", "Output CSV file path for detailed results")
-
-	// Meta
-	showVersion = flag.Bool("version", false, "Show version information and exit")
-)
-
-// --- Build time variables --- (can be set via ldflags during build)
-var (
-	Version   = "dev"
-	BuildDate = "unknown"
-)
-
-func main() {
-	// Configure flag usage message
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options] <manifest.txt>\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Object Store Stress Tester (Version: %s, Built: %s)\n\n", Version, BuildDate)
-		fmt.Fprintf(os.Stderr, "Arguments:\n")
-		fmt.Fprintf(os.Stderr, "  <manifest.txt>   Path to the text file containing object keys (one per line).\n")
-		fmt.Fprintf(os.Stderr, "                   Required for 'read' and 'mixed' modes. Ignored for 'write' mode.\n\n")
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nConfiguration Precedence: Flags > Environment Variables > YAML Config File\n")
-		fmt.Fprintf(os.Stderr, "\nEnvironment Variables:\n")
-		fmt.Fprintf(os.Stderr, "  AWS_ENDPOINT_URL, AWS_REGION, S3_BUCKET\n")
-		fmt.Fprintf(os.Stderr, "  AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (or use default credential chain)\n")
-		fmt.Fprintf(os.Stderr, "  STRESSER_OPERATION_TYPE ('read'|'write'|'mixed')\n")
-		fmt.Fprintf(os.Stderr, "  STRESSER_PUT_SIZE_KB (integer)\n")
-		fmt.Fprintf(os.Stderr, "  STRESSER_INSECURE_SKIP_VERIFY ('true'|'false')\n")
+	// Test case 1: Valid manifest with mixed formatting
+	testContent := `
+    key1.txt
+key2/file.dat
+  key3/with/spaces.log  
+		key4/tab/indented.bin
+  
+key5.zip
+`
+	err := os.WriteFile(manifestPath, []byte(testContent), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create test manifest file: %v", err)
 	}
 
-	// Parse command line flags
-	flag.Parse()
-
-	// Handle version flag
-	if *showVersion {
-		fmt.Printf("Version: %s\nBuild Date: %s\n", Version, BuildDate)
-		os.Exit(0)
+	keys, err := LoadManifest(manifestPath)
+	if err != nil {
+		t.Fatalf("LoadManifest failed on valid file: %v", err)
 	}
 
-	// Check for required manifest argument (conditionally required based on opType later)
-	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "Error: Manifest file path argument is required.")
-		flag.Usage()
-		os.Exit(1)
-	}
-	manifestPath := flag.Arg(0)
-
-	// --- Context Setup for Graceful Shutdown ---
-	// Create a root context that listens for interrupt signals (Ctrl+C)
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	// Call stop() when main exits to release resources associated with signal listening
-	defer stop()
-
-	// --- Run the application logic ---
-	// Keep main() minimal, delegate to run() function
-	if err := run(ctx, manifestPath); err != nil {
-		log.Fatalf("Error: %v", err) // Use log.Fatalf for cleaner exit message on error
+	// Verify the correct keys were loaded and whitespace was trimmed
+	expectedKeys := []string{
+		"key1.txt",
+		"key2/file.dat",
+		"key3/with/spaces.log",
+		"key4/tab/indented.bin",
+		"key5.zip",
 	}
 
-	log.Println("Stress test completed successfully.")
+	if len(keys) != len(expectedKeys) {
+		t.Errorf("Expected %d keys, got %d", len(expectedKeys), len(keys))
+	}
+
+	for i, expected := range expectedKeys {
+		if i >= len(keys) {
+			t.Fatalf("Missing expected key at index %d: %s", i, expected)
+		}
+		if keys[i] != expected {
+			t.Errorf("Key at index %d incorrect. Expected: %s, Got: %s", i, expected, keys[i])
+		}
+	}
+
+	// Test case 2: Non-existent file
+	_, err = LoadManifest(filepath.Join(dir, "nonexistent.txt"))
+	if err == nil {
+		t.Error("LoadManifest should return error for non-existent file")
+	}
+
+	// Test case 3: Empty file
+	emptyPath := filepath.Join(dir, "empty.txt")
+	err = os.WriteFile(emptyPath, []byte(""), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create empty test file: %v", err)
+	}
+
+	_, err = LoadManifest(emptyPath)
+	if err == nil {
+		t.Error("LoadManifest should return error for empty file")
+	}
+
+	// Test case 4: File with only whitespace
+	whitespaceOnlyPath := filepath.Join(dir, "whitespace.txt")
+	err = os.WriteFile(whitespaceOnlyPath, []byte("   \n  \t  \n"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create whitespace test file: %v", err)
+	}
+
+	_, err = LoadManifest(whitespaceOnlyPath)
+	if err == nil {
+		t.Error("LoadManifest should return error for file with only whitespace")
+	}
 }
 
-// run encapsulates the main application logic: config loading, validation, execution, reporting.
-func run(ctx context.Context, manifestPath string) error {
-	// 1. Load Configuration (from YAML and Env vars)
-	cfg, err := stresser.LoadConfig(*configPath)
+func TestManifestWriter(t *testing.T) {
+	// Create a temporary directory for test files
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "write_test_manifest.txt")
+
+	// Test creating a new manifest writer
+	writer, err := NewManifestWriter(manifestPath)
 	if err != nil {
-		return fmt.Errorf("failed to load base configuration: %w", err)
+		t.Fatalf("Failed to create manifest writer: %v", err)
 	}
 
-	// 2. Apply Flag overrides to Config
-	cfg.ApplyFlags(*duration, *concurrency, *randomize, manifestPath, *outputFile, *opType, *putSizeKB)
-
-	// 3. Validate Final Configuration
-	if err := cfg.Validate(); err != nil {
-		// Provide usage context if validation fails
-		flag.Usage()
-		return fmt.Errorf("configuration validation failed: %w", err)
+	// Test adding keys
+	testKeys := []string{
+		"test/key1.dat",
+		"test/key2.dat",
+		"test/subfolder/key3.dat",
+		"test/key with spaces.dat",
 	}
 
-	// 4. Execute the Stress Test
-	log.Println("Starting stress test run...")
-	results, stats, err := stresser.RunStressTest(ctx, cfg)
+	for _, key := range testKeys {
+		err := writer.AddKey(key)
+		if err != nil {
+			t.Errorf("Failed to add key %s: %v", key, err)
+		}
+	}
+
+	// Test closing the writer
+	err = writer.Close()
 	if err != nil {
-		// Check if the error was due to context cancellation (timeout or signal) - this is expected
-		if ctx.Err() == context.Canceled || ctx.Err() == context.DeadlineExceeded {
-			log.Printf("Test run ended gracefully due to context cancellation: %v", ctx.Err())
-			// Proceed to report results collected so far
-		} else {
-			// A different, unexpected error occurred during the run
-			return fmt.Errorf("stress test execution failed: %w", err)
+		t.Fatalf("Failed to close manifest writer: %v", err)
+	}
+
+	// Verify the manifest file contains the keys
+	content, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("Failed to read manifest file: %v", err)
+	}
+
+	contentStr := string(content)
+
+	for _, key := range testKeys {
+		if !strings.Contains(contentStr, key+"\n") {
+			t.Errorf("Manifest file missing key: %s", key)
 		}
 	}
 
-	// Ensure stats are available even if the run was interrupted early
-	if stats == nil {
-		log.Println("Warning: Statistics object is nil, possibly due to early termination before workers started.")
-		stats = stresser.NewStats() // Create empty stats
-		// Optionally try to calculate from partial results if available
-		if len(results) > 0 {
-			log.Println("Attempting to calculate stats from partial results...")
-			startTime := results[0].Timestamp // Approximate start
-			endTime := time.Now()             // Approximate end
-			for _, res := range results {
-				stats.AddResult(res)
-			}
-			stats.Calculate(startTime, endTime)
+	// Test loading the written manifest
+	loadedKeys, err := LoadManifest(manifestPath)
+	if err != nil {
+		t.Fatalf("Failed to load written manifest: %v", err)
+	}
+
+	if len(loadedKeys) != len(testKeys) {
+		t.Errorf("Expected %d keys, loaded %d", len(testKeys), len(loadedKeys))
+	}
+
+	// Verify loaded keys match written keys
+	for i, expected := range testKeys {
+		if i >= len(loadedKeys) {
+			t.Fatalf("Missing expected key at index %d: %s", i, expected)
+		}
+		if loadedKeys[i] != expected {
+			t.Errorf("Key at index %d incorrect. Expected: %s, Got: %s", i, expected, loadedKeys[i])
 		}
 	}
 
-	// 5. Print Summary Statistics to Console
-	stats.PrintSummary(os.Stdout)
-
-	// 6. Write Detailed Results to CSV
-	if len(results) > 0 {
-		if err := stresser.WriteResultsCSV(results, cfg.OutputFile); err != nil {
-			// Log CSV writing error but don't necessarily fail the whole run
-			log.Printf("Error writing results CSV: %v", err)
-			// return fmt.Errorf("failed to write results CSV: %w", err) // Optionally make this fatal
-		}
-	} else {
-		log.Println("No results collected, skipping CSV output.")
+	// Test overwriting an existing file
+	writer2, err := NewManifestWriter(manifestPath)
+	if err != nil {
+		t.Fatalf("Failed to create manifest writer for overwrite: %v", err)
 	}
 
-	// If we reached here without returning an unexpected error from RunStressTest, it's a success.
-	return nil
+	newKey := "completely_new_key.dat"
+	err = writer2.AddKey(newKey)
+	if err != nil {
+		t.Errorf("Failed to add key while overwriting: %v", err)
+	}
+
+	err = writer2.Close()
+	if err != nil {
+		t.Fatalf("Failed to close manifest writer for overwrite: %v", err)
+	}
+
+	// Verify the manifest file now contains only the new key
+	content, err = os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("Failed to read overwritten manifest file: %v", err)
+	}
+
+	contentStr = string(content)
+
+	// Should only contain the new key, not the original ones
+	if !strings.Contains(contentStr, newKey) {
+		t.Errorf("Overwritten manifest file missing new key: %s", newKey)
+	}
+
+	for _, key := range testKeys {
+		if strings.Contains(contentStr, key) {
+			t.Errorf("Overwritten manifest file still contains old key: %s", key)
+		}
+	}
 }

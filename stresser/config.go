@@ -2,10 +2,9 @@ package stresser
 
 import (
 	"fmt"
+	"gopkg.in/yaml.v3"
 	"os"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Config holds the application configuration.
@@ -26,11 +25,16 @@ type Config struct {
 	OutputFile      string `yaml:"-"`
 	OperationType   string `yaml:"operationType"`   // "read", "write", "mixed"
 	PutObjectSizeKB int    `yaml:"putObjectSizeKB"` // Size in KB for PUT operations
+
+	// File generation parameters for write mode
+	FileCount        int  `yaml:"fileCount"`        // Number of files to generate in write mode (default: 1000)
+	GenerateManifest bool `yaml:"generateManifest"` // Whether to write generated keys to manifest file
 }
 
 const (
 	DefaultOperationType = "read"
 	DefaultPutSizeKB     = 1024 // 1 MiB
+	DefaultFileCount     = 1000 // Default number of files to generate
 )
 
 // LoadConfig loads configuration from a YAML file path or environment variables.
@@ -39,9 +43,11 @@ const (
 func LoadConfig(configPath string) (*Config, error) {
 	// Set defaults
 	cfg := &Config{
-		Region:          "us-east-1", // Default region if not specified
-		OperationType:   DefaultOperationType,
-		PutObjectSizeKB: DefaultPutSizeKB,
+		Region:           "us-east-1", // Default region if not specified
+		OperationType:    DefaultOperationType,
+		PutObjectSizeKB:  DefaultPutSizeKB,
+		FileCount:        DefaultFileCount,
+		GenerateManifest: true, // By default, generate manifest file when in write mode
 	}
 
 	// 1. Load from YAML file if provided
@@ -74,9 +80,17 @@ func LoadConfig(configPath string) (*Config, error) {
 	if envSecret := os.Getenv("AWS_SECRET_ACCESS_KEY"); envSecret != "" {
 		cfg.SecretKey = envSecret
 	}
-	if os.Getenv("STRESSER_INSECURE_SKIP_VERIFY") == "true" {
-		cfg.InsecureSkipVerify = true
+
+	// Handle boolean environment variables
+	if skipVerify := os.Getenv("STRESSER_INSECURE_SKIP_VERIFY"); skipVerify != "" {
+		// Only set to true if explicitly "true", otherwise set to false
+		if skipVerify == "true" {
+			cfg.InsecureSkipVerify = true
+		} else if skipVerify == "false" {
+			cfg.InsecureSkipVerify = false
+		}
 	}
+
 	if envOpType := os.Getenv("STRESSER_OPERATION_TYPE"); envOpType != "" {
 		cfg.OperationType = envOpType
 	}
@@ -86,6 +100,23 @@ func LoadConfig(configPath string) (*Config, error) {
 			cfg.PutObjectSizeKB = size
 		} else {
 			fmt.Fprintf(os.Stderr, "Warning: Invalid STRESSER_PUT_SIZE_KB value '%s', using default %d KB\n", envPutSize, DefaultPutSizeKB)
+		}
+	}
+	if envFileCount := os.Getenv("STRESSER_FILE_COUNT"); envFileCount != "" {
+		var count int
+		if _, err := fmt.Sscan(envFileCount, &count); err == nil && count > 0 {
+			cfg.FileCount = count
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: Invalid STRESSER_FILE_COUNT value '%s', using default %d\n", envFileCount, DefaultFileCount)
+		}
+	}
+
+	// Handle boolean for generate manifest
+	if genManifest := os.Getenv("STRESSER_GENERATE_MANIFEST"); genManifest != "" {
+		if genManifest == "true" {
+			cfg.GenerateManifest = true
+		} else if genManifest == "false" {
+			cfg.GenerateManifest = false
 		}
 	}
 
@@ -103,7 +134,7 @@ func LoadConfig(configPath string) (*Config, error) {
 }
 
 // ApplyFlags overrides config values with those provided by command-line flags.
-func (c *Config) ApplyFlags(duration string, concurrency int, randomize bool, manifestPath, outputFile, opType string, putSizeKB int) {
+func (c *Config) ApplyFlags(duration string, concurrency int, randomize bool, manifestPath, outputFile, opType string, putSizeKB int, fileCount int, generateManifest bool) {
 	c.Duration = duration
 	c.Concurrency = concurrency
 	c.Randomize = randomize
@@ -116,6 +147,10 @@ func (c *Config) ApplyFlags(duration string, concurrency int, randomize bool, ma
 	if putSizeKB != DefaultPutSizeKB && putSizeKB > 0 {
 		c.PutObjectSizeKB = putSizeKB
 	}
+	if fileCount != DefaultFileCount && fileCount > 0 {
+		c.FileCount = fileCount
+	}
+	c.GenerateManifest = generateManifest
 }
 
 // Validate ensures the final configuration (after flags) is valid.

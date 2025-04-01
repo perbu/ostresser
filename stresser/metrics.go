@@ -201,9 +201,23 @@ func percentileDuration(sortedData []time.Duration, p int) time.Duration {
 	if len(sortedData) == 0 {
 		return 0
 	}
-	// Use Nearest Rank method: index = ceil(P/100 * N) - 1
-	// Or simpler integer arithmetic: index = (p * (N - 1)) / 100
-	index := (p * (len(sortedData) - 1)) / 100
+
+	// For small datasets, use a more appropriate algorithm
+	if len(sortedData) <= 2 {
+		// For 1 element, return it
+		if len(sortedData) == 1 {
+			return sortedData[0]
+		}
+		// For 2 elements, P50 = first element, P90/P99 = second element
+		if p <= 50 {
+			return sortedData[0]
+		}
+		return sortedData[1]
+	}
+
+	// For larger datasets, use Nearest Rank method
+	// index = ceil(P/100 * N) - 1
+	index := (p * len(sortedData)) / 100
 	if index < 0 {
 		index = 0
 	} // Ensure index is not negative

@@ -24,6 +24,8 @@ var (
 	randomize   = flag.Bool("r", false, "Randomize access to keys in the manifest for READ ops (default: sequential)")
 	opType      = flag.String("op", stresser.DefaultOperationType, "Operation type: 'read', 'write', or 'mixed'")
 	putSizeKB   = flag.Int("putsize", stresser.DefaultPutSizeKB, "Size of objects to upload in KB for 'write' or 'mixed' mode")
+	fileCount   = flag.Int("files", stresser.DefaultFileCount, "Number of files to generate for 'write' mode")
+	genManifest = flag.Bool("genmf", true, "Generate manifest file with created objects in 'write' mode")
 
 	// Output
 	outputFile = flag.String("o", "stress_results.csv", "Output CSV file path for detailed results")
@@ -93,7 +95,7 @@ func run(ctx context.Context, manifestPath string) error {
 	}
 
 	// 2. Apply Flag overrides to Config
-	cfg.ApplyFlags(*duration, *concurrency, *randomize, manifestPath, *outputFile, *opType, *putSizeKB)
+	cfg.ApplyFlags(*duration, *concurrency, *randomize, manifestPath, *outputFile, *opType, *putSizeKB, *fileCount, *genManifest)
 
 	// 3. Validate Final Configuration
 	if err := cfg.Validate(); err != nil {

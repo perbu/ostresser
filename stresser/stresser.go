@@ -17,17 +17,35 @@ import (
 
 // RunStressTest orchestrates the stress test, launching workers and collecting results.
 func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
-	// 1. Load Manifest (only strictly needed for 'read' or 'mixed' modes if reading existing keys)
+	// 1. Load or prepare manifest
 	var objectKeys []string
+	var manifestWriter *ManifestWriter
 	var err error
+
+	// For read/mixed mode, load existing manifest
 	if cfg.OperationType == "read" || cfg.OperationType == "mixed" {
 		objectKeys, err = LoadManifest(cfg.ManifestPath)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to load manifest for read/mixed mode: %w", err)
 		}
 		log.Printf("Loaded %d object keys from manifest %s", len(objectKeys), cfg.ManifestPath)
-	} else {
-		log.Printf("Write-only mode selected, manifest file '%s' will not be read, new keys will be generated.", cfg.ManifestPath)
+	} else if cfg.OperationType == "write" {
+		// For write-only mode with file generation
+		if cfg.GenerateManifest {
+			manifestWriter, err = NewManifestWriter(cfg.ManifestPath)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to create manifest writer: %w", err)
+			}
+			defer manifestWriter.Close()
+			log.Printf("Will generate manifest file at %s", cfg.ManifestPath)
+		} else {
+			log.Printf("Write-only mode selected, manifest generation is disabled.")
+		}
+
+		// If we're in write mode and want to pre-generate specific number of files instead of continuous generation
+		if cfg.FileCount > 0 {
+			log.Printf("Will generate and upload %d files of size %d KB each", cfg.FileCount, cfg.PutObjectSizeKB)
+		}
 	}
 
 	// 2. Create S3 Client
@@ -65,10 +83,17 @@ func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
 	startTime := time.Now()
 
 	// 4. Start Workers
-	for i := 0; i < cfg.Concurrency; i++ {
+	if cfg.OperationType == "write" && cfg.FileCount > 0 {
+		// Use fixed file count generation approach
 		wg.Add(1)
-		// Pass runCtx which has the timeout
-		go runWorker(runCtx, &wg, i, s3Client, cfg, objectKeys, putData, resultsChan)
+		go generateFiles(runCtx, &wg, s3Client, cfg, putData, resultsChan, manifestWriter)
+	} else {
+		// Use traditional workers for continuous test
+		for i := 0; i < cfg.Concurrency; i++ {
+			wg.Add(1)
+			// Pass runCtx which has the timeout
+			go runWorker(runCtx, &wg, i, s3Client, cfg, objectKeys, putData, resultsChan, manifestWriter)
+		}
 	}
 
 	// 5. Wait for workers to finish and close results channel
@@ -107,7 +132,7 @@ func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
 }
 
 // runWorker performs S3 operations (GET, PUT, or mixed) until the context is cancelled.
-func runWorker(ctx context.Context, wg *sync.WaitGroup, id int, s3Client S3ClientAPI, cfg *Config, objectKeys []string, putData []byte, resultsChan chan<- Result) {
+func runWorker(ctx context.Context, wg *sync.WaitGroup, id int, s3Client S3ClientAPI, cfg *Config, objectKeys []string, putData []byte, resultsChan chan<- Result, manifestWriter *ManifestWriter) {
 	defer wg.Done()
 	log.Printf("Worker %d started (Op: %s)", id, cfg.OperationType)
 
@@ -115,8 +140,8 @@ func runWorker(ctx context.Context, wg *sync.WaitGroup, id int, s3Client S3Clien
 	// Seed with unique value for each worker
 	localRand := mathrand.New(mathrand.NewSource(time.Now().UnixNano() + int64(id)))
 
-	keyCount := len(objectKeys) // Will be 0 in write-only mode
-	keyIndex := id % keyCount   // Simple initial distribution for sequential reads (if keyCount > 0)
+	keyCount := len(objectKeys)       // Will be 0 in write-only mode
+	keyIndex := id % max(keyCount, 1) // Simple initial distribution for sequential reads (if keyCount > 0)
 
 	for {
 		// Check for context cancellation *before* starting an operation
@@ -164,6 +189,13 @@ func runWorker(ctx context.Context, wg *sync.WaitGroup, id int, s3Client S3Clien
 			objectKey := fmt.Sprintf("stresser/worker%d/%d-%s.dat", id, time.Now().UnixNano(), randomString(8, localRand))
 			result = performPutOperation(ctx, s3Client, cfg.Bucket, objectKey, putData)
 
+			// If successful upload and manifest writing is enabled, add the key to manifest
+			if result.Error == "" && manifestWriter != nil {
+				if err := manifestWriter.AddKey(objectKey); err != nil {
+					log.Printf("Worker %d: Failed to write key to manifest: %v", id, err)
+				}
+			}
+
 		default:
 			// Should not happen due to config validation, but handle defensively
 			log.Printf("Worker %d: Invalid operation type '%s' encountered in loop.", id, opType)
@@ -185,6 +217,85 @@ func runWorker(ctx context.Context, wg *sync.WaitGroup, id int, s3Client S3Clien
 			log.Printf("Worker %d: Warning - Results channel potentially full. Dropping result for key %s.", id, result.ObjectKey)
 		}
 	}
+}
+
+// generateFiles generates and uploads a specific number of files, then exits.
+// This is used for the fixed file count generation mode.
+func generateFiles(ctx context.Context, wg *sync.WaitGroup, s3Client S3ClientAPI, cfg *Config, putData []byte, resultsChan chan<- Result, manifestWriter *ManifestWriter) {
+	defer wg.Done()
+	log.Printf("File generator started: will generate %d files of size %d KB", cfg.FileCount, cfg.PutObjectSizeKB)
+
+	// Initialize random source for key generation
+	localRand := mathrand.New(mathrand.NewSource(time.Now().UnixNano()))
+
+	// Create files concurrently using a pool of workers
+	filesChan := make(chan int, cfg.FileCount)
+	var workerWg sync.WaitGroup
+
+	// Fill the channel with file IDs
+	for i := 0; i < cfg.FileCount; i++ {
+		filesChan <- i
+	}
+	close(filesChan)
+
+	// Use Concurrency workers to generate files in parallel
+	for i := 0; i < cfg.Concurrency; i++ {
+		workerWg.Add(1)
+		go func(workerId int) {
+			defer workerWg.Done()
+
+			for fileId := range filesChan {
+				// Check for context cancellation
+				select {
+				case <-ctx.Done():
+					log.Printf("Generator worker %d stopping: %v", workerId, ctx.Err())
+					return
+				default:
+					// Continue processing
+				}
+
+				// Generate a unique key
+				objectKey := fmt.Sprintf("stresser/generated/%d-%s.dat", fileId, randomString(8, localRand))
+
+				// Upload the file
+				result := performPutOperation(ctx, s3Client, cfg.Bucket, objectKey, putData)
+
+				// If successful upload and manifest writing is enabled, add the key to manifest
+				if result.Error == "" && manifestWriter != nil {
+					if err := manifestWriter.AddKey(objectKey); err != nil {
+						log.Printf("Generator worker %d: Failed to write key to manifest: %v", workerId, err)
+					}
+				}
+
+				// Send result to result channel
+				select {
+				case resultsChan <- result:
+					// Result sent successfully
+				case <-ctx.Done():
+					// Context cancelled while trying to send
+					log.Printf("Generator worker %d: Context cancelled while sending result: %v", workerId, ctx.Err())
+					return
+				}
+
+				// Log progress periodically
+				if fileId > 0 && fileId%100 == 0 {
+					log.Printf("Generated %d/%d files...", fileId, cfg.FileCount)
+				}
+			}
+		}(i)
+	}
+
+	// Wait for all files to be generated
+	workerWg.Wait()
+	log.Printf("File generation completed: %d files generated", cfg.FileCount)
+}
+
+// Helper function to avoid division by zero
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // performGetOperation executes a single S3 GET request and measures timing.
