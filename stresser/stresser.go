@@ -63,7 +63,7 @@ func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
 	runCtx, cancel := context.WithTimeout(ctx, runDuration)
 	defer cancel() // Ensure cancellation propagates when RunStressTest returns
 
-	resultsChan := make(chan Result, cfg.Concurrency*2) // Buffered channel
+	resultsChan := make(chan Result, cfg.Concurrency*20) // Buffered channel
 	var wg sync.WaitGroup
 
 	// Prepare shared data buffer for PUT operations if needed
