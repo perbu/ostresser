@@ -3,11 +3,10 @@ package stresser
 import (
 	"bytes"
 	"context"
-	"crypto/rand" // Use crypto/rand for better random data generation
 	"fmt"
 	"io"
 	"log/slog"
-	mathrand "math/rand" // Use math/rand for non-crypto random choices (like picking keys)
+	"math/rand" // Use math/rand for all random operations
 	"sync"
 	"time"
 
@@ -66,16 +65,8 @@ func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
 	resultsChan := make(chan Result, cfg.Concurrency*20) // Buffered channel
 	var wg sync.WaitGroup
 
-	// Prepare shared data buffer for PUT operations if needed
-	var putData []byte
-	if cfg.OperationType == "write" || cfg.OperationType == "mixed" {
-		putData = make([]byte, cfg.PutObjectSizeKB*1024)
-		_, err := rand.Read(putData) // Fill with crypto-random data
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to generate random data for PUT: %w", err)
-		}
-		slog.Info("Prepared data buffer for PUT operations", "sizeKB", cfg.PutObjectSizeKB)
-	}
+	// Each worker will generate its own unique PUT data to avoid object deduplication
+	slog.Info("Workers will generate unique data for each PUT operation", "sizeKB", cfg.PutObjectSizeKB)
 
 	slog.Info("Starting stress test",
 		"concurrency", cfg.Concurrency,
@@ -90,13 +81,13 @@ func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
 	if cfg.OperationType == "write" && cfg.FileCount > 0 {
 		// Use fixed file count generation approach
 		wg.Add(1)
-		go generateFiles(runCtx, &wg, s3Client, cfg, putData, resultsChan, manifestWriter)
+		go generateFiles(runCtx, &wg, s3Client, cfg, resultsChan, manifestWriter)
 	} else {
 		// Use traditional workers for continuous test
 		for i := 0; i < cfg.Concurrency; i++ {
 			wg.Add(1)
 			// Pass runCtx which has the timeout
-			go runWorker(runCtx, &wg, i, s3Client, cfg, objectKeys, putData, resultsChan, manifestWriter)
+			go runWorker(runCtx, &wg, i, s3Client, cfg, objectKeys, resultsChan, manifestWriter)
 		}
 	}
 
@@ -136,13 +127,13 @@ func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
 }
 
 // runWorker performs S3 operations (GET, PUT, or mixed) until the context is cancelled.
-func runWorker(ctx context.Context, wg *sync.WaitGroup, id int, s3Client S3ClientAPI, cfg *Config, objectKeys []string, putData []byte, resultsChan chan<- Result, manifestWriter *ManifestWriter) {
+func runWorker(ctx context.Context, wg *sync.WaitGroup, id int, s3Client S3ClientAPI, cfg *Config, objectKeys []string, resultsChan chan<- Result, manifestWriter *ManifestWriter) {
 	defer wg.Done()
 	slog.Info("Worker started", "id", id, "operation", cfg.OperationType)
 
 	// Initialize random source per worker for non-crypto choices (key selection, op type in mixed mode)
 	// Seed with unique value for each worker
-	localRand := mathrand.New(mathrand.NewSource(time.Now().UnixNano() + int64(id)))
+	localRand := rand.New(rand.NewSource(time.Now().UnixNano() + int64(id)))
 
 	keyCount := len(objectKeys)       // Will be 0 in write-only mode
 	keyIndex := id % max(keyCount, 1) // Simple initial distribution for sequential reads (if keyCount > 0)
@@ -191,7 +182,15 @@ func runWorker(ctx context.Context, wg *sync.WaitGroup, id int, s3Client S3Clien
 			// Generate a unique key for each PUT to avoid overwrites (or use manifest keys if desired?)
 			// Using unique keys is generally better for write stress tests.
 			objectKey := fmt.Sprintf("stresser/worker%d/%d-%s.dat", id, time.Now().UnixNano(), randomString(8, localRand))
-			result = performPutOperation(ctx, s3Client, cfg.Bucket, objectKey, putData)
+
+			// Generate unique data for each PUT to avoid object deduplication
+			data := make([]byte, cfg.PutObjectSizeKB*1024)
+			// Use math/rand which is faster and doesn't risk entropy exhaustion
+			for i := range data {
+				data[i] = byte(localRand.Intn(256))
+			}
+
+			result = performPutOperation(ctx, s3Client, cfg.Bucket, objectKey, data)
 
 			// If successful upload and manifest writing is enabled, add the key to manifest
 			if result.Error == "" && manifestWriter != nil {
@@ -225,12 +224,12 @@ func runWorker(ctx context.Context, wg *sync.WaitGroup, id int, s3Client S3Clien
 
 // generateFiles generates and uploads a specific number of files, then exits.
 // This is used for the fixed file count generation mode.
-func generateFiles(ctx context.Context, wg *sync.WaitGroup, s3Client S3ClientAPI, cfg *Config, putData []byte, resultsChan chan<- Result, manifestWriter *ManifestWriter) {
+func generateFiles(ctx context.Context, wg *sync.WaitGroup, s3Client S3ClientAPI, cfg *Config, resultsChan chan<- Result, manifestWriter *ManifestWriter) {
 	defer wg.Done()
 	slog.Info("File generator started", "files", cfg.FileCount, "sizeKB", cfg.PutObjectSizeKB)
 
 	// Initialize random source for key generation
-	localRand := mathrand.New(mathrand.NewSource(time.Now().UnixNano()))
+	localRand := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	// Create files concurrently using a pool of workers
 	filesChan := make(chan int, cfg.FileCount)
@@ -261,8 +260,15 @@ func generateFiles(ctx context.Context, wg *sync.WaitGroup, s3Client S3ClientAPI
 				// Generate a unique key
 				objectKey := fmt.Sprintf("stresser/generated/%d-%s.dat", fileId, randomString(8, localRand))
 
-				// Upload the file
-				result := performPutOperation(ctx, s3Client, cfg.Bucket, objectKey, putData)
+				// Generate unique data for each file to avoid object deduplication
+				data := make([]byte, cfg.PutObjectSizeKB*1024)
+				// Use math/rand which is faster and doesn't risk entropy exhaustion
+				for i := range data {
+					data[i] = byte(localRand.Intn(256))
+				}
+
+				// Upload the file with unique data
+				result := performPutOperation(ctx, s3Client, cfg.Bucket, objectKey, data)
 
 				// If successful upload and manifest writing is enabled, add the key to manifest
 				if result.Error == "" && manifestWriter != nil {
@@ -394,7 +400,7 @@ func performPutOperation(ctx context.Context, s3Client S3ClientAPI, bucket, key 
 }
 
 // randomString generates a random alphanumeric string of length n using the provided math/rand source.
-func randomString(n int, r *mathrand.Rand) string {
+func randomString(n int, r *rand.Rand) string {
 	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, n)
 	for i := range b {
