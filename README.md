@@ -5,6 +5,12 @@
 This document provides developer-specific information about the Go object store stress tester, focusing on its
 configuration, programmatic usage, and internal design.
 
+## Install
+```bash
+go install github.com/perbu/ostresser@latest
+```
+
+
 ## Example output.
 
 ```text
