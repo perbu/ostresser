@@ -5,6 +5,33 @@
 This document provides developer-specific information about the Go object store stress tester, focusing on its
 configuration, programmatic usage, and internal design.
 
+## Example output.
+
+```text
+--- Stress Test Summary --- (7.556s) ---
+Overall:
+  Total Requests: 10000 (1323.46 req/s)
+  Total Success:  10000
+  Total Errors:   0
+
+GET Operations (0 total):
+  Success:        0
+  Bytes D/L:      0 (0.00 MiB)
+  Avg Throughput: 0.00 MiB/s
+  No successful GETs to calculate latency.
+
+PUT Operations (10000 total):
+  Success:        10000
+  Bytes U/L:      10485760000 (10000.00 MiB)
+  Avg Throughput: 1323.46 MiB/s
+  Latency (ms): |   Min  |   Avg  |   P50  |   P90  |   P99  |   Max
+  --------------|--------|--------|--------|--------|--------|--------
+  TTLB (total)  |   3.21 |   7.50 |   6.18 |  11.59 |  27.16 |  84.92
+----------------------------------------
+Detailed results written to stress_results.csv
+time=2025-04-01T14:00:16.933+02:00 level=INFO msg="Stress test completed successfully"
+```
+
 ## Manifest File (manifest.txt)
 
 The manifest file provides a list of object keys that the stress tester will interact with during 'read' or 'mixed'

@@ -4,8 +4,8 @@ bucket: "flumen"
 accessKey: "minioadmin"
 secretKey: "minioadmin"
 putObjectSizeKB: 1024 # Size of objects to upload in KB for "write" or "mixed" mode (default: 1024)
-generateManifest: true
-operationType: "write" # Options: "write", "read", "mixed"
+generateManifest: false
+operationType: "read" # Options: "write", "read", "mixed"
 fileCount: 10000
 # Logging configuration
 logLevel: "debug" # Log level: debug, info, warn, error (default: info)
