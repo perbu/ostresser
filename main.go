@@ -5,7 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/perbu/ostresser/stresser"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -30,6 +30,9 @@ var (
 	// Output
 	outputFile = flag.String("o", "stress_results.csv", "Output CSV file path for detailed results")
 
+	// Logging
+	logLevel = flag.String("log-level", stresser.DefaultLogLevel, "Log level: debug, info, warn, error")
+
 	// Meta
 	showVersion = flag.Bool("version", false, "Show version information and exit")
 )
@@ -52,6 +55,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  STRESSER_OPERATION_TYPE ('read'|'write'|'mixed')\n")
 		fmt.Fprintf(os.Stderr, "  STRESSER_PUT_SIZE_KB (integer)\n")
 		fmt.Fprintf(os.Stderr, "  STRESSER_INSECURE_SKIP_VERIFY ('true'|'false')\n")
+		fmt.Fprintf(os.Stderr, "  STRESSER_LOG_LEVEL ('debug'|'info'|'warn'|'error')\n")
 	}
 
 	// Parse command line flags
@@ -80,10 +84,11 @@ func main() {
 	// --- Run the application logic ---
 	// Keep main() minimal, delegate to run() function
 	if err := run(ctx, manifestPath); err != nil {
-		log.Fatalf("Error: %v", err) // Use log.Fatalf for cleaner exit message on error
+		slog.Error("Error running stress test", "error", err)
+		os.Exit(1)
 	}
 
-	log.Println("Stress test completed successfully.")
+	slog.Info("Stress test completed successfully")
 }
 
 // run encapsulates the main application logic: config loading, validation, execution, reporting.
@@ -95,22 +100,29 @@ func run(ctx context.Context, manifestPath string) error {
 	}
 
 	// 2. Apply Flag overrides to Config
-	cfg.ApplyFlags(*duration, *concurrency, *randomize, manifestPath, *outputFile, *opType, *putSizeKB, *fileCount, *genManifest)
+	cfg.ApplyFlags(*duration, *concurrency, *randomize, manifestPath, *outputFile, *opType, *putSizeKB, *fileCount, *genManifest, *logLevel)
 
-	// 3. Validate Final Configuration
+	// 3. Configure Logger based on Config
+	setupLogger(cfg.LogLevel)
+
+	// 4. Validate Final Configuration
 	if err := cfg.Validate(); err != nil {
 		// Provide usage context if validation fails
 		flag.Usage()
 		return fmt.Errorf("configuration validation failed: %w", err)
 	}
 
-	// 4. Execute the Stress Test
-	log.Println("Starting stress test run...")
+	// 5. Execute the Stress Test
+	slog.Info("Starting stress test run...",
+		"duration", cfg.Duration,
+		"concurrency", cfg.Concurrency,
+		"operation", cfg.OperationType)
+
 	results, stats, err := stresser.RunStressTest(ctx, cfg)
 	if err != nil {
 		// Check if the error was due to context cancellation (timeout or signal) - this is expected
 		if ctx.Err() == context.Canceled || ctx.Err() == context.DeadlineExceeded {
-			log.Printf("Test run ended gracefully due to context cancellation: %v", ctx.Err())
+			slog.Info("Test run ended gracefully due to context cancellation", "reason", ctx.Err())
 			// Proceed to report results collected so far
 		} else {
 			// A different, unexpected error occurred during the run
@@ -120,11 +132,11 @@ func run(ctx context.Context, manifestPath string) error {
 
 	// Ensure stats are available even if the run was interrupted early
 	if stats == nil {
-		log.Println("Warning: Statistics object is nil, possibly due to early termination before workers started.")
+		slog.Warn("Statistics object is nil, possibly due to early termination before workers started")
 		stats = stresser.NewStats() // Create empty stats
 		// Optionally try to calculate from partial results if available
 		if len(results) > 0 {
-			log.Println("Attempting to calculate stats from partial results...")
+			slog.Info("Attempting to calculate stats from partial results...")
 			startTime := results[0].Timestamp // Approximate start
 			endTime := time.Now()             // Approximate end
 			for _, res := range results {
@@ -134,20 +146,53 @@ func run(ctx context.Context, manifestPath string) error {
 		}
 	}
 
-	// 5. Print Summary Statistics to Console
-	stats.PrintSummary(os.Stdout)
+	// 6. Print Summary Statistics to Console
+	if stats != nil {
+		stats.PrintSummary(os.Stdout)
+	}
 
-	// 6. Write Detailed Results to CSV
+	// 7. Write Detailed Results to CSV
 	if len(results) > 0 {
 		if err := stresser.WriteResultsCSV(results, cfg.OutputFile); err != nil {
 			// Log CSV writing error but don't necessarily fail the whole run
-			log.Printf("Error writing results CSV: %v", err)
+			slog.Error("Error writing results CSV", "error", err, "file", cfg.OutputFile)
 			// return fmt.Errorf("failed to write results CSV: %w", err) // Optionally make this fatal
 		}
 	} else {
-		log.Println("No results collected, skipping CSV output.")
+		slog.Warn("No results collected, skipping CSV output")
 	}
 
 	// If we reached here without returning an unexpected error from RunStressTest, it's a success.
 	return nil
+}
+
+// setupLogger configures the slog logger based on the log level
+func setupLogger(level string) {
+	var logLevel slog.Level
+
+	// Set log level based on configuration
+	switch level {
+	case "debug":
+		logLevel = slog.LevelDebug
+	case "info":
+		logLevel = slog.LevelInfo
+	case "warn":
+		logLevel = slog.LevelWarn
+	case "error":
+		logLevel = slog.LevelError
+	default:
+		// Default to info if invalid level provided
+		logLevel = slog.LevelInfo
+	}
+
+	// Create a text-based handler with the configured level
+	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: logLevel,
+	})
+
+	// Set the default logger
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+
+	slog.Debug("Logger initialized", "level", level)
 }

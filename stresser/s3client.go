@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -27,7 +28,7 @@ func NewS3Client(ctx context.Context, cfg *Config) (*s3.Client, error) {
 	// Allows for options like disabling TLS verification (use cautiously!)
 	httpClient := &http.Client{}
 	if cfg.InsecureSkipVerify {
-		fmt.Println("Warning: Disabling TLS certificate verification for S3 client.")
+		slog.Warn("Disabling TLS certificate verification for S3 client")
 		// Clone default transport to avoid modifying global state
 		customTransport := http.DefaultTransport.(*http.Transport).Clone()
 		customTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
@@ -53,7 +54,6 @@ func NewS3Client(ctx context.Context, cfg *Config) (*s3.Client, error) {
 			})
 		sdkOpts = append(sdkOpts, config.WithEndpointResolverWithOptions(endpointResolver))
 	}
-
 	// 3. Custom HTTP Client
 	sdkOpts = append(sdkOpts, config.WithHTTPClient(httpClient))
 
@@ -63,9 +63,9 @@ func NewS3Client(ctx context.Context, cfg *Config) (*s3.Client, error) {
 	if cfg.AccessKey != "" && cfg.SecretKey != "" {
 		staticProvider := credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, "")
 		sdkOpts = append(sdkOpts, config.WithCredentialsProvider(staticProvider))
-		fmt.Println("Using static credentials provided in configuration.")
+		slog.Info("Using static credentials provided in configuration")
 	} else {
-		fmt.Println("Using default AWS credential chain (environment variables, shared config, IAM role, etc.).")
+		slog.Info("Using default AWS credential chain (environment variables, shared config, IAM role, etc.)")
 		// No need to explicitly add default provider, LoadDefaultConfig does this.
 	}
 
@@ -82,6 +82,7 @@ func NewS3Client(ctx context.Context, cfg *Config) (*s3.Client, error) {
 		o.UsePathStyle = true // Force path-style addressing
 		// Consider adding o.RetryMaxAttempts or other retry options if needed
 	})
+	slog.Info("S3 client created successfully", "endpoint", cfg.Endpoint, "region", cfg.Region, "user", cfg.AccessKey, "bucket", cfg.Bucket)
 
 	return s3Client, nil
 }

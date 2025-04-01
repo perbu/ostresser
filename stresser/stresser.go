@@ -6,7 +6,7 @@ import (
 	"crypto/rand" // Use crypto/rand for better random data generation
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	mathrand "math/rand" // Use math/rand for non-crypto random choices (like picking keys)
 	"sync"
 	"time"
@@ -28,7 +28,7 @@ func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to load manifest for read/mixed mode: %w", err)
 		}
-		log.Printf("Loaded %d object keys from manifest %s", len(objectKeys), cfg.ManifestPath)
+		slog.Info("Loaded object keys from manifest", "count", len(objectKeys), "path", cfg.ManifestPath)
 	} else if cfg.OperationType == "write" {
 		// For write-only mode with file generation
 		if cfg.GenerateManifest {
@@ -37,14 +37,14 @@ func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
 				return nil, nil, fmt.Errorf("failed to create manifest writer: %w", err)
 			}
 			defer manifestWriter.Close()
-			log.Printf("Will generate manifest file at %s", cfg.ManifestPath)
+			slog.Info("Will generate manifest file", "path", cfg.ManifestPath)
 		} else {
-			log.Printf("Write-only mode selected, manifest generation is disabled.")
+			slog.Info("Write-only mode selected", "manifestGeneration", "disabled")
 		}
 
 		// If we're in write mode and want to pre-generate specific number of files instead of continuous generation
 		if cfg.FileCount > 0 {
-			log.Printf("Will generate and upload %d files of size %d KB each", cfg.FileCount, cfg.PutObjectSizeKB)
+			slog.Info("Will generate and upload files", "count", cfg.FileCount, "sizeKB", cfg.PutObjectSizeKB)
 		}
 	}
 
@@ -53,7 +53,7 @@ func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create S3 client: %w", err)
 	}
-	log.Printf("S3 client configured for endpoint: %s, bucket: %s", cfg.Endpoint, cfg.Bucket)
+	slog.Info("S3 client configured", "endpoint", cfg.Endpoint, "bucket", cfg.Bucket)
 
 	// 3. Setup Concurrency & Context with Timeout
 	runDuration, err := time.ParseDuration(cfg.Duration)
@@ -74,11 +74,15 @@ func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to generate random data for PUT: %w", err)
 		}
-		log.Printf("Prepared %d KB data buffer for PUT operations.", cfg.PutObjectSizeKB)
+		slog.Info("Prepared data buffer for PUT operations", "sizeKB", cfg.PutObjectSizeKB)
 	}
 
-	log.Printf("Starting stress test: Concurrency=%d, Duration=%s, Operation=%s, RandomizeRead=%t, PutSizeKB=%d",
-		cfg.Concurrency, runDuration, cfg.OperationType, cfg.Randomize, cfg.PutObjectSizeKB)
+	slog.Info("Starting stress test",
+		"concurrency", cfg.Concurrency,
+		"duration", runDuration,
+		"operation", cfg.OperationType,
+		"randomizeRead", cfg.Randomize,
+		"putSizeKB", cfg.PutObjectSizeKB)
 
 	startTime := time.Now()
 
@@ -101,7 +105,7 @@ func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
 	go func() {
 		wg.Wait()
 		close(resultsChan)
-		log.Println("All workers finished.")
+		slog.Info("All workers finished")
 	}()
 
 	// 6. Collect Results from the channel until it's closed
@@ -109,10 +113,10 @@ func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
 	for result := range resultsChan {
 		allResults = append(allResults, result)
 		// Optional: Log progress periodically
-		// if len(allResults)%100 == 0 { log.Printf("Collected %d results...", len(allResults)) }
+		// if len(allResults)%100 == 0 { slog.Info("Collected results progress", "count", len(allResults)) }
 	}
 	endTime := time.Now()
-	log.Printf("Collected %d total results.", len(allResults))
+	slog.Info("Collected total results", "count", len(allResults))
 
 	// 7. Calculate Final Statistics
 	stats := NewStats()
@@ -134,7 +138,7 @@ func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
 // runWorker performs S3 operations (GET, PUT, or mixed) until the context is cancelled.
 func runWorker(ctx context.Context, wg *sync.WaitGroup, id int, s3Client S3ClientAPI, cfg *Config, objectKeys []string, putData []byte, resultsChan chan<- Result, manifestWriter *ManifestWriter) {
 	defer wg.Done()
-	log.Printf("Worker %d started (Op: %s)", id, cfg.OperationType)
+	slog.Info("Worker started", "id", id, "operation", cfg.OperationType)
 
 	// Initialize random source per worker for non-crypto choices (key selection, op type in mixed mode)
 	// Seed with unique value for each worker
@@ -147,7 +151,7 @@ func runWorker(ctx context.Context, wg *sync.WaitGroup, id int, s3Client S3Clien
 		// Check for context cancellation *before* starting an operation
 		select {
 		case <-ctx.Done():
-			log.Printf("Worker %d stopping: %v", id, ctx.Err())
+			slog.Info("Worker stopping", "id", id, "reason", ctx.Err())
 			return // Context cancelled (timeout or external signal)
 		default:
 			// Continue processing
@@ -169,7 +173,7 @@ func runWorker(ctx context.Context, wg *sync.WaitGroup, id int, s3Client S3Clien
 		switch opType {
 		case "read":
 			if keyCount == 0 {
-				log.Printf("Worker %d: Skipping READ op as no keys loaded (write-only mode or empty manifest?)", id)
+				slog.Warn("Skipping READ operation", "workerId", id, "reason", "no keys loaded (write-only mode or empty manifest)")
 				// Avoid busy-looping if manifest is empty in read/mixed mode
 				time.Sleep(100 * time.Millisecond) // Small delay
 				continue
@@ -192,13 +196,13 @@ func runWorker(ctx context.Context, wg *sync.WaitGroup, id int, s3Client S3Clien
 			// If successful upload and manifest writing is enabled, add the key to manifest
 			if result.Error == "" && manifestWriter != nil {
 				if err := manifestWriter.AddKey(objectKey); err != nil {
-					log.Printf("Worker %d: Failed to write key to manifest: %v", id, err)
+					slog.Error("Failed to write key to manifest", "workerId", id, "error", err)
 				}
 			}
 
 		default:
 			// Should not happen due to config validation, but handle defensively
-			log.Printf("Worker %d: Invalid operation type '%s' encountered in loop.", id, opType)
+			slog.Error("Invalid operation type encountered", "workerId", id, "operationType", opType)
 			time.Sleep(time.Second) // Prevent fast loop on error
 			continue
 		}
@@ -210,11 +214,11 @@ func runWorker(ctx context.Context, wg *sync.WaitGroup, id int, s3Client S3Clien
 			// Result sent successfully
 		case <-ctx.Done():
 			// Context cancelled while trying to send, log and exit worker
-			log.Printf("Worker %d: Context cancelled while sending result: %v", id, ctx.Err())
+			slog.Info("Context cancelled while sending result", "workerId", id, "reason", ctx.Err())
 			return
 		default:
 			// Should ideally not happen with a buffered channel unless producer is way faster than consumer
-			log.Printf("Worker %d: Warning - Results channel potentially full. Dropping result for key %s.", id, result.ObjectKey)
+			slog.Warn("Results channel potentially full, dropping result", "workerId", id, "key", result.ObjectKey)
 		}
 	}
 }
@@ -223,7 +227,7 @@ func runWorker(ctx context.Context, wg *sync.WaitGroup, id int, s3Client S3Clien
 // This is used for the fixed file count generation mode.
 func generateFiles(ctx context.Context, wg *sync.WaitGroup, s3Client S3ClientAPI, cfg *Config, putData []byte, resultsChan chan<- Result, manifestWriter *ManifestWriter) {
 	defer wg.Done()
-	log.Printf("File generator started: will generate %d files of size %d KB", cfg.FileCount, cfg.PutObjectSizeKB)
+	slog.Info("File generator started", "files", cfg.FileCount, "sizeKB", cfg.PutObjectSizeKB)
 
 	// Initialize random source for key generation
 	localRand := mathrand.New(mathrand.NewSource(time.Now().UnixNano()))
@@ -248,7 +252,7 @@ func generateFiles(ctx context.Context, wg *sync.WaitGroup, s3Client S3ClientAPI
 				// Check for context cancellation
 				select {
 				case <-ctx.Done():
-					log.Printf("Generator worker %d stopping: %v", workerId, ctx.Err())
+					slog.Info("Generator worker stopping", "workerId", workerId, "reason", ctx.Err())
 					return
 				default:
 					// Continue processing
@@ -263,7 +267,7 @@ func generateFiles(ctx context.Context, wg *sync.WaitGroup, s3Client S3ClientAPI
 				// If successful upload and manifest writing is enabled, add the key to manifest
 				if result.Error == "" && manifestWriter != nil {
 					if err := manifestWriter.AddKey(objectKey); err != nil {
-						log.Printf("Generator worker %d: Failed to write key to manifest: %v", workerId, err)
+						slog.Error("Generator worker failed to write key to manifest", "workerId", workerId, "error", err)
 					}
 				}
 
@@ -273,13 +277,13 @@ func generateFiles(ctx context.Context, wg *sync.WaitGroup, s3Client S3ClientAPI
 					// Result sent successfully
 				case <-ctx.Done():
 					// Context cancelled while trying to send
-					log.Printf("Generator worker %d: Context cancelled while sending result: %v", workerId, ctx.Err())
+					slog.Info("Generator worker context cancelled while sending result", "workerId", workerId, "reason", ctx.Err())
 					return
 				}
 
 				// Log progress periodically
 				if fileId > 0 && fileId%100 == 0 {
-					log.Printf("Generated %d/%d files...", fileId, cfg.FileCount)
+					slog.Info("Generated files progress", "current", fileId, "total", cfg.FileCount)
 				}
 			}
 		}(i)
@@ -287,7 +291,7 @@ func generateFiles(ctx context.Context, wg *sync.WaitGroup, s3Client S3ClientAPI
 
 	// Wait for all files to be generated
 	workerWg.Wait()
-	log.Printf("File generation completed: %d files generated", cfg.FileCount)
+	slog.Info("File generation completed", "files", cfg.FileCount)
 }
 
 // Helper function to avoid division by zero
@@ -321,7 +325,7 @@ func performGetOperation(ctx context.Context, s3Client S3ClientAPI, bucket, key 
 
 	if err != nil {
 		result.Error = err.Error()
-		// log.Printf("DEBUG: GET %s/%s failed: %v", bucket, key, err) // Optional detailed logging
+		// slog.Debug("GET operation failed", "bucket", bucket, "key", key, "error", err) // Optional detailed logging
 		return result // Return error result
 	}
 	// IMPORTANT: Ensure response body is closed even if errors occur later
@@ -378,7 +382,7 @@ func performPutOperation(ctx context.Context, s3Client S3ClientAPI, bucket, key 
 
 	if err != nil {
 		result.Error = err.Error()
-		// log.Printf("DEBUG: PUT %s/%s failed: %v", bucket, key, err) // Optional detailed logging
+		slog.Debug("PUT operation failed", "bucket", bucket, "key", key, "error", err)
 		return result // Return error result
 	}
 

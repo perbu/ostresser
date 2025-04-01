@@ -29,12 +29,16 @@ type Config struct {
 	// File generation parameters for write mode
 	FileCount        int  `yaml:"fileCount"`        // Number of files to generate in write mode (default: 1000)
 	GenerateManifest bool `yaml:"generateManifest"` // Whether to write generated keys to manifest file
+
+	// Logging configuration
+	LogLevel string `yaml:"logLevel"` // Log level: debug, info, warn, error (default: info)
 }
 
 const (
 	DefaultOperationType = "read"
 	DefaultPutSizeKB     = 1024 // 1 MiB
 	DefaultFileCount     = 1000 // Default number of files to generate
+	DefaultLogLevel      = "info"
 )
 
 // LoadConfig loads configuration from a YAML file path or environment variables.
@@ -48,6 +52,7 @@ func LoadConfig(configPath string) (*Config, error) {
 		PutObjectSizeKB:  DefaultPutSizeKB,
 		FileCount:        DefaultFileCount,
 		GenerateManifest: true, // By default, generate manifest file when in write mode
+		LogLevel:         DefaultLogLevel,
 	}
 
 	// 1. Load from YAML file if provided
@@ -120,6 +125,17 @@ func LoadConfig(configPath string) (*Config, error) {
 		}
 	}
 
+	// Handle log level environment variable
+	if logLevel := os.Getenv("STRESSER_LOG_LEVEL"); logLevel != "" {
+		// Validate the log level
+		switch strings.ToLower(logLevel) {
+		case "debug", "info", "warn", "error":
+			cfg.LogLevel = strings.ToLower(logLevel)
+		default:
+			fmt.Fprintf(os.Stderr, "Warning: Invalid STRESSER_LOG_LEVEL value '%s', using default '%s'\n", logLevel, DefaultLogLevel)
+		}
+	}
+
 	// Basic validation (before applying flags)
 	if cfg.Endpoint == "" {
 		return nil, fmt.Errorf("endpoint URL is required (set via -config file, AWS_ENDPOINT_URL env var)")
@@ -134,7 +150,7 @@ func LoadConfig(configPath string) (*Config, error) {
 }
 
 // ApplyFlags overrides config values with those provided by command-line flags.
-func (c *Config) ApplyFlags(duration string, concurrency int, randomize bool, manifestPath, outputFile, opType string, putSizeKB int, fileCount int, generateManifest bool) {
+func (c *Config) ApplyFlags(duration string, concurrency int, randomize bool, manifestPath, outputFile, opType string, putSizeKB int, fileCount int, generateManifest bool, logLevel string) {
 	c.Duration = duration
 	c.Concurrency = concurrency
 	c.Randomize = randomize
@@ -151,6 +167,15 @@ func (c *Config) ApplyFlags(duration string, concurrency int, randomize bool, ma
 		c.FileCount = fileCount
 	}
 	c.GenerateManifest = generateManifest
+
+	// Only override if a valid log level was specified
+	if logLevel != DefaultLogLevel {
+		// Validate the log level
+		switch strings.ToLower(logLevel) {
+		case "debug", "info", "warn", "error":
+			c.LogLevel = strings.ToLower(logLevel)
+		}
+	}
 }
 
 // Validate ensures the final configuration (after flags) is valid.
