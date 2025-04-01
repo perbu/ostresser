@@ -1,0 +1,16 @@
+# S3 Connection Details
+endpoint: "https://your-s3-compatible-endpoint.com"
+region: "us-east-1" # Optional, but often needed for AWS SDK
+bucket: "your-target-bucket"
+
+# Credentials (alternatively use standard AWS env vars like AWS_ACCESS_KEY_ID, etc.)
+accessKey: "YOUR_ACCESS_KEY"
+secretKey: "YOUR_SECRET_KEY"
+
+# Test Parameters
+# operationType: "read" # Operation type: "read", "write", or "mixed" (default: read)
+# putObjectSizeKB: 1024 # Size of objects to upload in KB for "write" or "mixed" mode (default: 1024)
+
+# Advanced TLS Setting
+# insecureSkipVerify: false # Optional: set to true to disable TLS verification (use with caution for non-prod)
+
