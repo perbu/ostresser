@@ -3,6 +3,7 @@ package stresser
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +13,10 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+)
+
+const (
+	progressCount = 1000
 )
 
 // RunStressTest orchestrates the stress test, launching workers and collecting results.
@@ -117,7 +122,7 @@ func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
 	stats.Calculate(startTime, endTime) // Calculate averages, percentiles etc.
 
 	// Check if the test ended due to timeout or external signal rather than an error
-	if runCtx.Err() != nil && runCtx.Err() != context.Canceled && runCtx.Err() != context.DeadlineExceeded {
+	if runCtx.Err() != nil && !errors.Is(runCtx.Err(), context.Canceled) && !errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		// If the context error is something else, return it
 		return allResults, stats, fmt.Errorf("test run context ended unexpectedly: %w", runCtx.Err())
 	}
@@ -228,9 +233,6 @@ func generateFiles(ctx context.Context, wg *sync.WaitGroup, s3Client S3ClientAPI
 	defer wg.Done()
 	slog.Info("File generator started", "files", cfg.FileCount, "sizeKB", cfg.PutObjectSizeKB)
 
-	// Initialize random source for key generation
-	localRand := rand.New(rand.NewSource(time.Now().UnixNano()))
-
 	// Create files concurrently using a pool of workers
 	filesChan := make(chan int, cfg.FileCount)
 	var workerWg sync.WaitGroup
@@ -245,6 +247,8 @@ func generateFiles(ctx context.Context, wg *sync.WaitGroup, s3Client S3ClientAPI
 	for i := 0; i < cfg.Concurrency; i++ {
 		workerWg.Add(1)
 		go func(workerId int) {
+			// Initialize random source for key generation
+			localRand := rand.New(rand.NewSource(time.Now().UnixNano()))
 			defer workerWg.Done()
 
 			for fileId := range filesChan {
@@ -288,7 +292,7 @@ func generateFiles(ctx context.Context, wg *sync.WaitGroup, s3Client S3ClientAPI
 				}
 
 				// Log progress periodically
-				if fileId > 0 && fileId%100 == 0 {
+				if fileId > 0 && fileId%progressCount == 0 {
 					slog.Info("Generated files progress", "current", fileId, "total", cfg.FileCount)
 				}
 			}

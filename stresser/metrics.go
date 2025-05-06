@@ -267,6 +267,10 @@ func (s *Stats) PrintSummary(w io.Writer) {
 	fmt.Fprintf(w, "\nPUT Operations (%d total):\n", s.TotalPuts)
 	fmt.Fprintf(w, "  Success:        %d\n", successPuts) // Placeholder count
 	fmt.Fprintf(w, "  Bytes U/L:      %d (%.2f MiB)\n", s.TotalBytesUp, float64(s.TotalBytesUp)/(1024*1024))
+	if successPuts > 0 {
+		avgObjectSizeKB := float64(s.TotalBytesUp) / float64(successPuts) / 1024
+		fmt.Fprintf(w, "  Object Size:    %.2f KiB\n", avgObjectSizeKB)
+	}
 	fmt.Fprintf(w, "  Avg Throughput: %.2f MiB/s\n", throughputUpMBps)
 
 	if successPuts > 0 {
