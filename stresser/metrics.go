@@ -30,6 +30,7 @@ type Stats struct {
 	TotalErrors    int64
 	TotalBytesDown int64
 	TotalBytesUp   int64
+	Concurrency    int             // Number of concurrent workers used in the test
 	GetTTFBs       []time.Duration // Latencies only for successful GETs
 	GetTTLBs       []time.Duration // Latencies only for successful GETs
 	PutTTLBs       []time.Duration // Latencies only for successful PUTs (TTLB represents full PUT duration)
@@ -245,6 +246,7 @@ func (s *Stats) PrintSummary(w io.Writer) {
 
 	fmt.Fprintf(w, "\n--- Stress Test Summary --- (%s) ---\n", s.actualDuration.Round(time.Millisecond))
 	fmt.Fprintf(w, "Overall:\n")
+	fmt.Fprintf(w, "  Concurrency:    %d\n", s.Concurrency)
 	fmt.Fprintf(w, "  Total Requests: %d (%.2f req/s)\n", s.TotalRequests, requestsPerSec)
 	fmt.Fprintf(w, "  Total Success:  %d\n", totalSuccess)
 	fmt.Fprintf(w, "  Total Errors:   %d\n", s.TotalErrors)

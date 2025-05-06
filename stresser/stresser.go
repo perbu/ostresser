@@ -116,6 +116,7 @@ func RunStressTest(ctx context.Context, cfg *Config) ([]Result, *Stats, error) {
 
 	// 7. Calculate Final Statistics
 	stats := NewStats()
+	stats.Concurrency = cfg.Concurrency // Set the concurrency level
 	for _, res := range allResults {
 		stats.AddResult(res) // AddResult handles filtering successes/failures for stats
 	}
