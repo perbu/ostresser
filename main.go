@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/perbu/ostresser/stresser"
@@ -121,7 +122,7 @@ func run(ctx context.Context, manifestPath string) error {
 	results, stats, err := stresser.RunStressTest(ctx, cfg)
 	if err != nil {
 		// Check if the error was due to context cancellation (timeout or signal) - this is expected
-		if ctx.Err() == context.Canceled || ctx.Err() == context.DeadlineExceeded {
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			slog.Info("Test run ended gracefully due to context cancellation", "reason", ctx.Err())
 			// Proceed to report results collected so far
 		} else {
