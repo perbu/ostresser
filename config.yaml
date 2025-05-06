@@ -1,11 +1,11 @@
-endpoint: "http://localhost:8000"
+endpoint: "http://localhost:9000/"
 region: "us-east-1" # Optional, but often needed for AWS SDK
 bucket: "flumen"
-accessKey: "user1"
-secretKey: "somewhatlongsecret"
-putObjectSizeKB: 1024 # Size of objects to upload in KB for "write" or "mixed" mode (default: 1024)
-generateManifest: false
-operationType: "read" # Options: "write", "read", "mixed"
-fileCount: 10000
+accessKey: "minioadmin"
+secretKey: "minioadmin"
+putObjectSizeKB: 128 # Size of objects to upload in KB for "write" or "mixed" mode (default: 1024)
+generateManifest: true
+operationType: "write" # Options: "write", "read", "mixed"
+fileCount: 100000
 # Logging configuration
-logLevel: "debug" # Log level: debug, info, warn, error (default: info)
+logLevel: "info" # Log level: debug, info, warn, error (default: info)
